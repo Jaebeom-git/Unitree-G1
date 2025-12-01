@@ -552,17 +552,17 @@ class LeggedRobot(BaseTask):
         rigid_shape_props_asset = self.gym.get_asset_rigid_shape_properties(robot_asset)
 
         # save body names from the asset
-        body_names = self.gym.get_asset_rigid_body_names(robot_asset)
+        self.body_names = self.gym.get_asset_rigid_body_names(robot_asset)
         self.dof_names = self.gym.get_asset_dof_names(robot_asset)
-        self.num_bodies = len(body_names)
+        self.num_bodies = len(self.body_names)
         self.num_dofs = len(self.dof_names)
-        feet_names = [s for s in body_names if self.cfg.asset.foot_name in s]
+        feet_names = [s for s in self.body_names if self.cfg.asset.foot_name in s]
         penalized_contact_names = []
         for name in self.cfg.asset.penalize_contacts_on:
-            penalized_contact_names.extend([s for s in body_names if name in s])
+            penalized_contact_names.extend([s for s in self.body_names if name in s])
         termination_contact_names = []
         for name in self.cfg.asset.terminate_after_contacts_on:
-            termination_contact_names.extend([s for s in body_names if name in s])
+            termination_contact_names.extend([s for s in self.body_names if name in s])
 
         base_init_state_list = self.cfg.init_state.pos + self.cfg.init_state.rot + self.cfg.init_state.lin_vel + self.cfg.init_state.ang_vel
         self.base_init_state = to_torch(base_init_state_list, device=self.device, requires_grad=False)

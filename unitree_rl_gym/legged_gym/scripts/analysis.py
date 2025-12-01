@@ -14,22 +14,6 @@ from legged_gym.envs.g1.g1_config import G1RoughCfg
 G1_DEFAULT_ANGLES = G1RoughCfg.init_state.default_joint_angles
 G1_ACTION_SCALE = G1RoughCfg.control.action_scale
 
-# DOF index -> joint name (12 actuated joints in g1_12dof.urdf)
-G1_JOINT_NAMES_BY_INDEX = [
-    "left_hip_yaw_joint",
-    "left_hip_roll_joint",
-    "left_hip_pitch_joint",
-    "left_knee_joint",
-    "left_ankle_pitch_joint",
-    "left_ankle_roll_joint",
-    "right_hip_yaw_joint",
-    "right_hip_roll_joint",
-    "right_hip_pitch_joint",
-    "right_knee_joint",
-    "right_ankle_pitch_joint",
-    "right_ankle_roll_joint",
-]
-NAME_TO_INDEX = {n: i for i, n in enumerate(G1_JOINT_NAMES_BY_INDEX)}
 # ---- Pretty labels for plots ----
 _BASE_JOINT_LABELS = {
     "hip_yaw_joint": "Hip Yaw",
@@ -40,11 +24,22 @@ _BASE_JOINT_LABELS = {
     "ankle_roll_joint": "Ankle Roll",
 }
 
+# body names: ['pelvis', 'left_hip_pitch_link', 'left_hip_roll_link', 'left_hip_yaw_link', 'left_knee_link', 'left_ankle_pitch_link', 'left_ankle_roll_link', 'right_hip_pitch_link', 'right_hip_roll_link', 'right_hip_yaw_link', 'right_knee_link', 'right_ankle_pitch_link', 'right_ankle_roll_link']
+
+# joint names: ['left_hip_pitch_joint', 'left_hip_roll_joint', 'left_hip_yaw_joint', 'left_knee_joint', 'left_ankle_pitch_joint', 'left_ankle_roll_joint', 'right_hip_pitch_joint', 'right_hip_roll_joint', 'right_hip_yaw_joint', 'right_knee_joint', 'right_ankle_pitch_joint', 'right_ankle_roll_joint']
+
+
 _SIDE_LABELS = {
     "left": "Left",
     "right": "Right",
 }
 
+JOINT_GRID = [
+    ["left_hip_roll_joint",   "left_hip_pitch_joint",    "left_hip_yaw_joint"],
+    ["right_hip_roll_joint",  "right_hip_pitch_joint",   "right_hip_yaw_joint"],
+    ["left_knee_joint",       "left_ankle_roll_joint",  "left_ankle_pitch_joint"],
+    ["right_knee_joint",      "right_ankle_roll_joint", "right_ankle_pitch_joint"],
+]
 
 def get_joint_display_labels(jname: str):
     """
@@ -91,35 +86,28 @@ def plot_joint_pos_action_group(df: pd.DataFrame, out_dir: str):
     """
     4x3 grid:
 
-        L_hip_yaw      L_hip_roll      L_hip_pitch
-        R_hip_yaw      R_hip_roll      R_hip_pitch
-        L_knee         L_ankle_pitch   L_ankle_roll
-        R_knee         R_ankle_pitch   R_ankle_roll
+        L_hip_roll      L_hip_pitch      L_hip_yaw
+        R_hip_roll      R_hip_pitch      R_hip_yaw
+        L_knee         L_ankle_roll   L_ankle_pitch
+        R_knee         R_ankle_roll   R_ankle_pitch
 
     Each subplot:
       - blue:  joint pos [deg]
       - red--: target pos = default + action_scale*action [deg]
-    """
+    """    
     os.makedirs(out_dir, exist_ok=True)
 
-    dof_cols = [c for c in df.columns if c.startswith("dof_pos_")]
-    act_cols = [c for c in df.columns if c.startswith("action_")]
-
-    if len(dof_cols) == 0 or len(act_cols) == 0:
+    has_dof = any(c.startswith("dof_pos_") for c in df.columns)
+    has_act = any(c.startswith("action_") for c in df.columns)
+    if not (has_dof and has_act):
         print("[Analysis] No dof_pos_* or action_* columns found, skip joint/action plots.")
         return
-
+    
+    
     t = df["time"].values
 
-    grid_joint_names = [
-        ["left_hip_yaw_joint", "left_hip_roll_joint", "left_hip_pitch_joint"],
-        ["right_hip_yaw_joint", "right_hip_roll_joint", "right_hip_pitch_joint"],
-        ["left_knee_joint", "left_ankle_pitch_joint", "left_ankle_roll_joint"],
-        ["right_knee_joint", "right_ankle_pitch_joint", "right_ankle_roll_joint"],
-    ]
-
-    n_rows = len(grid_joint_names)
-    n_cols = len(grid_joint_names[0])
+    n_rows = len(JOINT_GRID)
+    n_cols = len(JOINT_GRID[0])
 
     fig, axes = plt.subplots(
         n_rows, n_cols, figsize=(4 * n_cols, 2.5 * n_rows), sharex=True
@@ -128,16 +116,11 @@ def plot_joint_pos_action_group(df: pd.DataFrame, out_dir: str):
     for r in range(n_rows):
         for c in range(n_cols):
             ax = axes[r, c]
-            jname = grid_joint_names[r][c]
+            jname = JOINT_GRID[r][c]
 
-            if jname not in NAME_TO_INDEX:
-                ax.set_title(f"{jname} (no index)", fontsize=AX_TITLE_FONTSIZE)
-                ax.axis("off")
-                continue
-
-            j = NAME_TO_INDEX[jname]
-            q_col = f"dof_pos_{j}"
-            a_col = f"action_{j}"
+            q_col = f"dof_pos_{jname}"
+            a_col = f"action_{jname}"
+            tq_col = f"target_q_{jname}"
 
             if q_col not in df.columns or a_col not in df.columns:
                 ax.set_title(f"{jname} (missing data)", fontsize=AX_TITLE_FONTSIZE)
@@ -146,9 +129,7 @@ def plot_joint_pos_action_group(df: pd.DataFrame, out_dir: str):
 
             q_rad = df[q_col].values
             a = df[a_col].values
-
-            default_angle_rad = float(G1_DEFAULT_ANGLES.get(jname, 0.0))
-            target_q_rad = default_angle_rad + G1_ACTION_SCALE * a
+            target_q_rad = df[tq_col].values
 
             q_deg = np.rad2deg(q_rad)
             target_q_deg = np.rad2deg(target_q_rad)
@@ -190,6 +171,75 @@ def plot_joint_pos_action_group(df: pd.DataFrame, out_dir: str):
     fig.savefig(os.path.join(out_dir, "joint_pos_action_group.png"), dpi=300)
     plt.close(fig)
 
+
+# ------------------ Torque vs joint velocity (4x3 layout) ------------------ #
+def plot_torque_vs_vel_group(df: pd.DataFrame, out_dir: str):
+    """
+    4x3 grid, 각 subplot에
+        x-axis: joint velocity [deg/s]  (dof_vel_{joint_name})
+        y-axis: torque [Nm]             (torque_{joint_name})
+
+    축은 원점 기준 좌우/상하 대칭이 되도록 설정.
+    """
+    os.makedirs(out_dir, exist_ok=True)
+
+    has_vel = any(c.startswith("dof_vel_") for c in df.columns)
+    has_tau = any(c.startswith("torque_") for c in df.columns)
+    if not (has_vel and has_tau):
+        print("[Analysis] No dof_vel_* or torque_* columns found, skip torque/velocity plots.")
+        return
+
+    n_rows = len(JOINT_GRID)
+    n_cols = len(JOINT_GRID[0])
+
+    fig, axes = plt.subplots(
+        n_rows, n_cols, figsize=(4 * n_cols, 2.5 * n_rows), sharex=False, sharey=False
+    )
+
+    for r in range(n_rows):
+        for c in range(n_cols):
+            ax = axes[r, c]
+            jname = JOINT_GRID[r][c]
+
+            dq_col = f"dof_vel_{jname}"
+            tau_col = f"torque_{jname}"
+
+            if dq_col not in df.columns or tau_col not in df.columns:
+                ax.set_title(f"{jname} (missing data)", fontsize=AX_TITLE_FONTSIZE)
+                ax.grid(True)
+                continue
+
+            dq_rad_s = df[dq_col].values
+            tau = df[tau_col].values
+
+            dq_deg_s = np.rad2deg(dq_rad_s)
+
+            # scatter로 τ–ω 분포 시각화
+            ax.scatter(dq_deg_s, tau, s=3, alpha=0.4)
+
+            # --- 축을 원점 기준 대칭으로 맞추기 ---
+            vmax = float(np.max(np.abs(dq_deg_s))) if dq_deg_s.size > 0 else 1.0
+            tmax = float(np.max(np.abs(tau)))      if tau.size > 0 else 1.0
+
+            # 0만 있는 경우를 방지해서 최소 범위 확보
+            if vmax == 0:
+                vmax = 1.0
+            if tmax == 0:
+                tmax = 1.0
+
+            ax.set_xlim(-vmax, vmax)
+            ax.set_ylim(-tmax, tmax)
+
+            pretty_title, _ = get_joint_display_labels(jname)
+            ax.set_title(pretty_title, fontsize=AX_TITLE_FONTSIZE)
+            ax.set_xlabel("vel [deg/s]", fontsize=AX_LABEL_FONTSIZE)
+            ax.set_ylabel("torque [Nm]", fontsize=AX_LABEL_FONTSIZE)
+            ax.grid(True)
+
+    fig.suptitle("G1 torque vs joint velocity", fontsize=FIG_TITLE_FONTSIZE)
+    fig.tight_layout(rect=[0, 0.02, 0.98, 0.95])
+    fig.savefig(os.path.join(out_dir, "torque_vs_vel_group.png"), dpi=300)
+    plt.close(fig)
 
 # ------------------ SUMMARY: distance, vx, y, z, yaw, reward ------------------ #
 
@@ -249,7 +299,7 @@ def plot_summary_group(df: pd.DataFrame, out_dir: str):
     ax_xy.set_ylabel("y [m]", fontsize=AX_LABEL_FONTSIZE)
     ax_xy.set_title("Base trajectory (x-y)", fontsize=AX_TITLE_FONTSIZE)
     ax_xy.grid(True)
-    ax_xy.set_ylim(-0.5, 0.5)
+    ax_xy.set_ylim(-0.1, 0.1)
     # ax_xy.axis("equal")
 
     # 2) z vs time
@@ -311,6 +361,7 @@ def analyze_single_csv(csv_path: str, out_root: str):
     os.makedirs(out_dir, exist_ok=True)
 
     plot_joint_pos_action_group(df, out_dir)
+    plot_torque_vs_vel_group(df, out_dir)
     plot_summary_group(df, out_dir)
 
     print(f"[Analysis] Saved plots for {csv_stem} to: {out_dir}")

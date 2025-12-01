@@ -12,7 +12,7 @@ import numpy as np
 import isaacgym  # noqa: F401 (needed to load Isaac Gym)
 from isaacgym import gymapi
 import torch
-from isaacgym.torch_utils import get_euler_xyz
+from isaacgym.torch_utils import get_euler_xyz, quat_apply
 
 from legged_gym import LEGGED_GYM_ROOT_DIR
 from legged_gym.envs import *
@@ -43,7 +43,6 @@ def update_camera_follow(env, base_pos_tensor, offset=CAMERA_OFFSET):
     target = gymapi.Vec3(x, y, z)
     pos = gymapi.Vec3(x + offset[0], y + offset[1], z + offset[2])
 
-    # 🔥 핵심: viewer_camera_look_at 사용
     env.gym.viewer_camera_look_at(env.viewer, env.envs[0], pos, target)
 
 
@@ -104,6 +103,9 @@ class TimeSeriesLogger:
         self.header = None
         self.rows = []
 
+        self.joint_names = getattr(env, "dof_names", None)
+        self.body_names  = getattr(env, "body_names", None)
+
     def _build_header(self, state, actions, commands):
         """Build CSV header from first sample."""
         header = [
@@ -127,18 +129,67 @@ class TimeSeriesLogger:
         # joint states
         if state.get("dof_pos", None) is not None:
             n_dof = state["dof_pos"].shape[1]
+            use_names = (
+                self.joint_names is not None
+                and len(self.joint_names) == n_dof
+            )
             for i in range(n_dof):
-                header.append(f"dof_pos_{i}")
+                jname = self.joint_names[i] if use_names else str(i)
+                header.append(f"dof_pos_{jname}")
+
         if state.get("dof_vel", None) is not None:
             n_dof = state["dof_vel"].shape[1]
+            use_names = (
+                self.joint_names is not None
+                and len(self.joint_names) == n_dof
+            )
             for i in range(n_dof):
-                header.append(f"dof_vel_{i}")
+                jname = self.joint_names[i] if use_names else str(i)
+                header.append(f"dof_vel_{jname}")
+        # if state.get("dof_pos", None) is not None:
+        #     n_dof = state["dof_pos"].shape[1]
+        #     for i in range(n_dof):
+        #         header.append(f"dof_pos_{i}")
+        # if state.get("dof_vel", None) is not None:
+        #     n_dof = state["dof_vel"].shape[1]
+        #     for i in range(n_dof):
+        #         header.append(f"dof_vel_{i}")
+
+        # target joint positions (for P control)
+        if state.get("target_q", None) is not None and state["target_q"] is not None:
+            n_dof = state["target_q"].shape[1]
+            use_names = (
+                self.joint_names is not None
+                and len(self.joint_names) == n_dof
+            )
+            for i in range(n_dof):
+                jname = self.joint_names[i] if use_names else str(i)
+                header.append(f"target_q_{jname}")
+
+        # joint torques
+        if state.get("torques", None) is not None and state["torques"] is not None:
+            n_dof = state["torques"].shape[1]
+            use_names = (
+                self.joint_names is not None
+                and len(self.joint_names) == n_dof
+            )
+            for i in range(n_dof):
+                jname = self.joint_names[i] if use_names else str(i)
+                header.append(f"torque_{jname}")
 
         # RL actions (actor outputs)
         if actions is not None:
             n_act = actions.shape[1]
+            use_names = (
+                self.joint_names is not None
+                and len(self.joint_names) == n_act
+            )
             for i in range(n_act):
-                header.append(f"action_{i}")
+                aname = self.joint_names[i] if use_names else str(i)
+                header.append(f"action_{aname}")
+            # n_act = actions.shape[1]
+            # for i in range(n_act):
+            #     header.append(f"action_{i}")
 
         # high-level commands (vx, vy, yaw_rate/heading, ...)
         if commands is not None:
@@ -148,27 +199,66 @@ class TimeSeriesLogger:
 
         # rigid body states (flattened)
         if state.get("body_pos", None) is not None:
-            n = state["body_pos"][0].numel()
-            for i in range(n):
-                header.append(f"body_pos_flat_{i}")
+            n_bodies = state["body_pos"].shape[0]
+            use_names = (
+                self.body_names is not None
+                and len(self.body_names) == n_bodies
+            )
+            axes = ["x", "y", "z"]
+            for b in range(n_bodies):
+                bname = self.body_names[b] if use_names else str(b)
+                for ax in axes:
+                    header.append(f"body_{bname}_pos_{ax}")
         if state.get("body_quat", None) is not None:
-            n = state["body_quat"][0].numel()
-            for i in range(n):
-                header.append(f"body_quat_flat_{i}")
+            n_bodies = state["body_quat"].shape[0]
+            use_names = (
+                self.body_names is not None
+                and len(self.body_names) == n_bodies
+            )
+            comps = ["w", "x", "y", "z"]
+            for b in range(n_bodies):
+                bname = self.body_names[b] if use_names else str(b)
+                for c in comps:
+                    header.append(f"body_{bname}_quat_{c}")
         if state.get("body_lin_vel", None) is not None:
-            n = state["body_lin_vel"][0].numel()
-            for i in range(n):
-                header.append(f"body_lin_vel_flat_{i}")
+            n_bodies = state["body_lin_vel"].shape[0]
+            use_names = (
+                self.body_names is not None
+                and len(self.body_names) == n_bodies
+            )
+            axes = ["x", "y", "z"]
+            for b in range(n_bodies):
+                bname = self.body_names[b] if use_names else str(b)
+                for ax in axes:
+                    header.append(f"body_{bname}_lin_vel_{ax}")
         if state.get("body_ang_vel", None) is not None:
-            n = state["body_ang_vel"][0].numel()
-            for i in range(n):
-                header.append(f"body_ang_vel_flat_{i}")
+            n_bodies = state["body_ang_vel"].shape[0]
+            use_names = (
+                self.body_names is not None
+                and len(self.body_names) == n_bodies
+            )
+            axes = ["x", "y", "z"]
+            for b in range(n_bodies):
+                bname = self.body_names[b] if use_names else str(b)
+                for ax in axes:
+                    header.append(f"body_{bname}_ang_vel_{ax}")
 
-        # contact forces (flattened)
+        # # contact forces (flattened)
         if state.get("contact_forces", None) is not None:
-            n = state["contact_forces"][0].numel()
-            for i in range(n):
-                header.append(f"contact_flat_{i}")
+            n_bodies = state["contact_forces"].shape[1]
+            use_names = (
+                self.body_names is not None
+                and len(self.body_names) == n_bodies
+            )
+            axes = ["x", "y", "z"]
+            for b in range(n_bodies):
+                bname = self.body_names[b] if use_names else str(b)
+                for ax in axes:
+                    header.append(f"contact_{bname}_{ax}")
+        # if state.get("contact_forces", None) is not None:
+        #     n = state["contact_forces"][0].numel()
+        #     for i in range(n):
+        #         header.append(f"contact_flat_{i}")
 
         self.header = header
 
@@ -198,6 +288,16 @@ class TimeSeriesLogger:
             dq = state["dof_vel"][0].detach().cpu().numpy()
             row.extend(dq.tolist())
 
+        # target_q
+        if state.get("target_q", None) is not None and state["target_q"] is not None:
+            tq = state["target_q"][0].detach().cpu().numpy()
+            row.extend(tq.tolist())
+
+        # torques
+        if state.get("torques", None) is not None and state["torques"] is not None:
+            tau = state["torques"][0].detach().cpu().numpy()
+            row.extend(tau.tolist())
+
         # actions (RL output)
         if actions is not None:
             a = actions[0].detach().cpu().numpy()
@@ -208,24 +308,24 @@ class TimeSeriesLogger:
             c = commands[0].detach().cpu().numpy()
             row.extend(c.tolist())
 
-        # rigid body states
-        if state.get("body_pos", None) is not None:
-            v = state["body_pos"][0].detach().cpu().numpy().reshape(-1)
-            row.extend(v.tolist())
-        if state.get("body_quat", None) is not None:
-            v = state["body_quat"][0].detach().cpu().numpy().reshape(-1)
-            row.extend(v.tolist())
-        if state.get("body_lin_vel", None) is not None:
-            v = state["body_lin_vel"][0].detach().cpu().numpy().reshape(-1)
-            row.extend(v.tolist())
-        if state.get("body_ang_vel", None) is not None:
-            v = state["body_ang_vel"][0].detach().cpu().numpy().reshape(-1)
-            row.extend(v.tolist())
+        # # rigid body states
+        # if state.get("body_pos", None) is not None:
+        #     v = state["body_pos"][0].detach().cpu().numpy().reshape(-1)
+        #     row.extend(v.tolist())
+        # if state.get("body_quat", None) is not None:
+        #     v = state["body_quat"][0].detach().cpu().numpy().reshape(-1)
+        #     row.extend(v.tolist())
+        # if state.get("body_lin_vel", None) is not None:
+        #     v = state["body_lin_vel"][0].detach().cpu().numpy().reshape(-1)
+        #     row.extend(v.tolist())
+        # if state.get("body_ang_vel", None) is not None:
+        #     v = state["body_ang_vel"][0].detach().cpu().numpy().reshape(-1)
+        #     row.extend(v.tolist())
 
-        # contact forces
-        if state.get("contact_forces", None) is not None:
-            v = state["contact_forces"][0].detach().cpu().numpy().reshape(-1)
-            row.extend(v.tolist())
+        # # contact forces
+        # if state.get("contact_forces", None) is not None:
+        #     v = state["contact_forces"][0].detach().cpu().numpy().reshape(-1)
+        #     row.extend(v.tolist())
 
         self.rows.append(row)
 
@@ -284,6 +384,7 @@ class EvalBase:
             "base_ang_vel": base_ang_vel.clone(),
         }
 
+        # joint states
         if hasattr(self.env, "dof_pos") and self.env.dof_pos is not None:
             state["dof_pos"] = self.env.dof_pos.clone()
         else:
@@ -294,27 +395,51 @@ class EvalBase:
         else:
             state["dof_vel"] = None
 
+        if hasattr(self.env, "torques") and self.env.torques is not None:
+            state["torques"] = self.env.torques.clone()
+        else:
+            state["torques"] = None
+
+        # RL actions
         if hasattr(self.env, "actions") and self.env.actions is not None:
             state["actions"] = self.env.actions.clone()
         else:
             state["actions"] = None
 
-        if hasattr(self.env, "rigid_body_states") and self.env.rigid_body_states is not None:
-            rb = self.env.rigid_body_states  # (N, B, 13)
-            state["body_pos"] = rb[..., 0:3].clone()
-            state["body_quat"] = rb[..., 3:7].clone()
-            state["body_lin_vel"] = rb[..., 7:10].clone()
-            state["body_ang_vel"] = rb[..., 10:13].clone()
-        else:
-            state["body_pos"] = None
-            state["body_quat"] = None
-            state["body_lin_vel"] = None
-            state["body_ang_vel"] = None
+        target_q = None
+        try:
+            if (
+                hasattr(self.env, "default_dof_pos")
+                and hasattr(self.env, "actions") and self.env.actions is not None
+                and hasattr(self.env, "cfg")
+                and hasattr(self.env.cfg, "control")
+                and getattr(self.env.cfg.control, "control_type", "") == "P"
+            ):
+                action_scale = float(self.env.cfg.control.action_scale)
+                target_q = self.env.default_dof_pos + action_scale * self.env.actions
+        except Exception:
+            target_q = None
 
-        if hasattr(self.env, "contact_forces") and self.env.contact_forces is not None:
-            state["contact_forces"] = self.env.contact_forces.clone()
-        else:
-            state["contact_forces"] = None
+        state["target_q"] = target_q.clone() if target_q is not None else None
+
+        # # rigid body states
+        # if hasattr(self.env, "rigid_body_states") and self.env.rigid_body_states is not None:
+        #     rb = self.env.rigid_body_states  # (N, B, 13)
+        #     state["body_pos"] = rb[..., 0:3].clone()
+        #     state["body_quat"] = rb[..., 3:7].clone()
+        #     state["body_lin_vel"] = rb[..., 7:10].clone()
+        #     state["body_ang_vel"] = rb[..., 10:13].clone()
+        # else:
+        #     state["body_pos"] = None
+        #     state["body_quat"] = None
+        #     state["body_lin_vel"] = None
+        #     state["body_ang_vel"] = None
+
+        # # contact forces
+        # if hasattr(self.env, "contact_forces") and self.env.contact_forces is not None:
+        #     state["contact_forces"] = self.env.contact_forces.clone()
+        # else:
+        #     state["contact_forces"] = None
 
         return state
 
@@ -326,12 +451,15 @@ class EvalBase:
 # -------------------------
 #   10 m straight walk
 # -------------------------
-
 class Walk(EvalBase):
     """
     10 m straight walking.
-    - commands[:,0] = forward velocity
-    - optional line-tracking feedback (y, yaw) with P or PD
+    commands:
+      0: forward velocity (vx)
+      1: lateral velocity (vy)
+      2: yaw rate
+      3: heading (unused at eval, kept at 0)
+    Optional line-tracking feedback (y, heading) with P or PD.
     """
 
     def __init__(
@@ -351,58 +479,57 @@ class Walk(EvalBase):
         self.use_feedback = self.feedback_mode in ("P", "PD")
 
         self.num_envs, self.num_commands = env.commands.shape
+        assert self.num_commands >= 4, "G1 eval assumes 4D commands: [vx, vy, yaw_rate, heading]"
 
-        self.heading_command = False
-        if hasattr(env.cfg, "commands") and hasattr(env.cfg.commands, "heading_command"):
-            self.heading_command = bool(env.cfg.commands.heading_command)
-
-        # line-tracking gains (y, yaw in world frame)
-        self.kp_y = 1.5
-        self.kd_y = 0.5
-        self.kp_yaw = 1.5
-        self.kd_yaw = 0.5
+        # line tracking gains (world-frame y & heading)
+        self.kp_y = 2.0
+        self.kd_y = 1.0
+        self.kp_yaw = 10
+        self.kd_yaw = 1.0
 
         # saturation
         self.max_vy = 0.5
         self.max_yaw_rate = 0.8
 
+        # target heading in world frame (+x)
+        self.target_heading = 0.0
+
     @torch.no_grad()
     def _apply_feedback(self, state, cmds, mask):
-        """Apply y/yaw feedback (P or PD) to commands."""
+        """Apply line-tracking feedback (y, heading) to commands."""
         if not self.use_feedback:
             return
 
-        base_pos = state["base_pos"]
-        base_rpy = state["base_rpy"]
-        base_lin_vel = state["base_lin_vel"]
-        base_ang_vel = state["base_ang_vel"]
+        base_pos = state["base_pos"]         # (N,3), world
+        base_quat = state["base_quat"]       # (N,4)
+        base_lin_vel = state["base_lin_vel"] # (N,3), world
+        base_ang_vel = state["base_ang_vel"] # (N,3), world
 
+        # heading from forward vector in world frame
+        forward = quat_apply(base_quat, self.env.forward_vec)  # (N,3)
+        heading = torch.atan2(forward[:, 1], forward[:, 0])    # rad
+
+        # tracking signals (y = 0 line, heading = +x)
         y = base_pos[:, 1]
-        yaw = base_rpy[:, 2]
         vy = base_lin_vel[:, 1]
         yaw_rate = base_ang_vel[:, 2]
 
+        heading_err = heading - self.target_heading
+
         if self.feedback_mode == "P":
             lateral_cmd = -self.kp_y * y
-            yaw_cmd = -self.kp_yaw * yaw
+            yaw_cmd = -self.kp_yaw * heading_err
         else:  # "PD"
             lateral_cmd = -self.kp_y * y - self.kd_y * vy
-            yaw_cmd = -self.kp_yaw * yaw - self.kd_yaw * yaw_rate
+            yaw_cmd = -self.kp_yaw * heading_err - self.kd_yaw * yaw_rate
 
         lateral_cmd = lateral_cmd.clamp(-self.max_vy, self.max_vy)
         yaw_cmd = yaw_cmd.clamp(-self.max_yaw_rate, self.max_yaw_rate)
 
-        if self.num_commands > 1:
-            cmds[mask, 1] = lateral_cmd[mask]
-
-        if self.heading_command:
-            if self.num_commands > 2:
-                cmds[mask, 2] = yaw_cmd[mask]
-            if self.num_commands > 3:
-                cmds[mask, 3] = 0.0  # keep heading along +x
-        else:
-            if self.num_commands > 2:
-                cmds[mask, 2] = yaw_cmd[mask]
+        # fixed command layout: [vx, vy, yaw_rate, heading]
+        cmds[mask, 1] = lateral_cmd[mask]
+        cmds[mask, 2] = yaw_cmd[mask]
+        cmds[mask, 3] = 0.0  # keep desired heading = 0 (along +x)
 
     @torch.no_grad()
     def step(self):
@@ -421,22 +548,17 @@ class Walk(EvalBase):
         cmds = self.env.commands
         cmds[:, :] = 0.0
 
+        # forward command along +x
         cmds[walk_mask, 0] = self.walk_speed
 
         if self.use_feedback:
             self._apply_feedback(state, cmds, walk_mask)
         else:
-            if self.num_commands > 1:
-                cmds[walk_mask, 1] = 0.0    # lateral
-            if self.heading_command:
-                if self.num_commands > 3:
-                    cmds[walk_mask, 3] = 0.0    # heading
-            else:
-                if self.num_commands > 2:
-                    cmds[walk_mask, 2] = 0.0    # yaw
+            cmds[walk_mask, 1] = 0.0  # vy
+            cmds[walk_mask, 2] = 0.0  # yaw rate
+            cmds[walk_mask, 3] = 0.0  # heading
 
         self.env.commands[:] = cmds
-        
         return dist, state, done_by_distance
 
 
@@ -460,12 +582,11 @@ def eval_single(args):
     env_cfg.domain_rand.push_robots = False
     env_cfg.env.test = True
 
+    # disable heading command for eval walk (heading off)
+    env_cfg.commands.heading_command = False
+
     env, _ = task_registry.make_env(name=args.task, args=args, env_cfg=env_cfg)
     obs = env.get_observations()
-
-    # disable heading command for eval walk
-    if hasattr(env_cfg, "commands") and hasattr(env_cfg.commands, "heading_command"):
-        env_cfg.commands.heading_command = False
 
     # load policy
     train_cfg.runner.resume = True
@@ -483,7 +604,7 @@ def eval_single(args):
         env,
         target_distance=4.0,
         walk_speed=1.0,
-        feedback_mode="",
+        feedback_mode="P",
         args=args,
     )
 
@@ -543,7 +664,7 @@ def eval_single(args):
             update_camera_follow(env, base_pos0)
 
     # walking phase
-    max_steps = 10 * int(env.max_episode_length)
+    max_steps = 1000 * int(env.max_episode_length)
     reached = False
 
     for step_idx in range(max_steps):
@@ -580,7 +701,7 @@ def eval_single(args):
             accumulated_time += dt
             
             if accumulated_time >= frame_interval:
-                accumulated_time -= frame_interval  # 잉여분 보존
+                accumulated_time -= frame_interval
 
                 move_record_camera(env, state["base_pos"][0])
 
